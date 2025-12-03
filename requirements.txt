@@ -1,0 +1,15 @@
+# Web framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+
+# AI/ML
+openai>=1.0.0
+azure-cognitiveservices-speech>=1.31.0
+
+# Video/Audio processing
+moviepy>=1.0.3
+pydub>=0.25.1
+
+# Utilities
+python-dotenv>=1.0.0

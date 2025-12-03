@@ -1,0 +1,51 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv
+venv/
+ENV/
+env/
+.eggs
+*.egg-info/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test files
+video/
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Temp files
+*.wav
+*.tmp
+temp_*
+
+# Docs
+*.md
+LICENSE
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+

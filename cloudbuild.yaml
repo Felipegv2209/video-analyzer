@@ -1,0 +1,40 @@
+# Cloud Build configuration for automated deployments
+# This file is used by Cloud Build to automatically build and deploy
+# when you push to your repository
+
+steps:
+  # Build the container image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/video-talent-analyzer:$COMMIT_SHA', '.']
+  
+  # Push the container image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/video-talent-analyzer:$COMMIT_SHA']
+  
+  # Deploy container image to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'video-talent-analyzer'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/video-talent-analyzer:$COMMIT_SHA'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--memory'
+      - '2Gi'
+      - '--cpu'
+      - '2'
+      - '--timeout'
+      - '600'
+      - '--allow-unauthenticated'
+
+images:
+  - 'gcr.io/$PROJECT_ID/video-talent-analyzer:$COMMIT_SHA'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
