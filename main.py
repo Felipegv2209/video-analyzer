@@ -1,17 +1,19 @@
 import os
+import re
 import uuid
 import tempfile
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import Optional
 from dotenv import load_dotenv
+import gdown
 
 # Load environment variables from .env file
 load_dotenv()
 
 from analyzer import VideoTalentAnalyzer
+
 
 # --- Lifespan for startup/shutdown ---
 @asynccontextmanager
@@ -30,13 +32,17 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Video Talent Analyzer API",
-    description="Analyzes video content to generate candidate profiles using AI",
-    version="1.0.0",
+    description="Analyzes video content from Google Drive to generate candidate profiles using AI",
+    version="2.0.0",
     lifespan=lifespan
 )
 
 
-# --- Response Models ---
+# --- Models ---
+class AnalysisRequest(BaseModel):
+    video_url: str
+
+
 class AnalysisResponse(BaseModel):
     success: bool
     profile: Optional[str] = None
@@ -50,19 +56,7 @@ class HealthResponse(BaseModel):
     version: str
 
 
-# --- Endpoints ---
-@app.get("/", response_model=HealthResponse)
-async def root():
-    """Health check endpoint for Cloud Run"""
-    return HealthResponse(status="healthy", version="1.0.0")
-
-
-@app.get("/health", response_model=HealthResponse)
-async def health_check():
-    """Health check endpoint"""
-    return HealthResponse(status="healthy", version="1.0.0")
-
-
+# --- Helper Functions ---
 def cleanup_temp_file(file_path: str):
     """Background task to clean up temporary files"""
     try:
@@ -73,62 +67,142 @@ def cleanup_temp_file(file_path: str):
         print(f"⚠️  Error cleaning up {file_path}: {e}")
 
 
+def extract_google_drive_file_id(url: str) -> Optional[str]:
+    """
+    Extract file ID from various Google Drive URL formats:
+    - https://drive.google.com/file/d/FILE_ID/view?usp=sharing
+    - https://drive.google.com/open?id=FILE_ID
+    - https://drive.google.com/uc?id=FILE_ID
+    """
+    patterns = [
+        r'/file/d/([a-zA-Z0-9_-]+)',
+        r'[?&]id=([a-zA-Z0-9_-]+)',
+        r'/d/([a-zA-Z0-9_-]+)',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    
+    return None
+
+
+def download_from_google_drive(url: str, output_path: str) -> bool:
+    """
+    Download a file from Google Drive.
+    Handles large files and virus scan warnings automatically.
+    """
+    try:
+        file_id = extract_google_drive_file_id(url)
+        
+        if file_id:
+            download_url = f"https://drive.google.com/uc?id={file_id}"
+            gdown.download(download_url, output_path, quiet=False, fuzzy=True)
+        else:
+            gdown.download(url, output_path, quiet=False, fuzzy=True)
+        
+        return os.path.exists(output_path) and os.path.getsize(output_path) > 0
+        
+    except Exception as e:
+        print(f"❌ Error downloading file: {str(e)}")
+        return False
+
+
+# --- Endpoints ---
+@app.get("/", response_model=HealthResponse)
+async def root():
+    """Health check endpoint for Cloud Run"""
+    return HealthResponse(status="healthy", version="2.0.0")
+
+
+@app.get("/health", response_model=HealthResponse)
+async def health_check():
+    """Health check endpoint"""
+    return HealthResponse(status="healthy", version="2.0.0")
+
+
 @app.post("/analyze", response_model=AnalysisResponse)
 async def analyze_video(
-    background_tasks: BackgroundTasks,
-    video: UploadFile = File(..., description="Video file to analyze (MP4, MOV, etc.)")
+    request: AnalysisRequest,
+    background_tasks: BackgroundTasks
 ):
     """
-    Analyze a video file to generate a candidate profile.
+    🚀 Analyze a video from Google Drive URL
     
-    This endpoint:
-    1. Extracts audio from the video
-    2. Transcribes content using OpenAI Whisper
-    3. Analyzes pronunciation with Azure AI
-    4. Generates a candidate profile with GPT-4
+    Simply provide a Google Drive link and get a complete candidate analysis.
     
-    Supported formats: MP4, MOV, AVI, MKV, WebM
-    Max recommended size: 500MB
+    **How to use:**
+    1. Upload your video to Google Drive
+    2. Right-click → "Share" → "Anyone with the link"
+    3. Copy the link and send it here
+    
+    **Supported URL formats:**
+    - `https://drive.google.com/file/d/FILE_ID/view?usp=sharing`
+    - `https://drive.google.com/open?id=FILE_ID`
+    
+    **What you get:**
+    - Full transcript of the video
+    - Pronunciation analysis metrics
+    - AI-generated candidate profile
+    
+    **Supported video formats:** MP4, MOV, AVI, MKV, WebM, M4V
+    
+    **Max file size:** ~1GB
     """
     
-    # Validate file type
-    allowed_extensions = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v'}
-    file_ext = os.path.splitext(video.filename or "")[1].lower()
+    video_url = request.video_url.strip()
     
-    if file_ext not in allowed_extensions:
+    if not video_url:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid file type '{file_ext}'. Allowed: {', '.join(allowed_extensions)}"
+            detail="video_url is required"
         )
     
-    # Create temporary file path
-    # Use /tmp for Cloud Run (it's the only writable directory)
+    # Validate it looks like a URL
+    if not video_url.startswith(('http://', 'https://')):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid URL. Must start with http:// or https://"
+        )
+    
+    # Determine file extension (default to mp4)
+    file_ext = ".mp4"
+    url_path = video_url.split('?')[0]
+    if '.' in url_path.split('/')[-1]:
+        extracted_ext = os.path.splitext(url_path)[1].lower()
+        allowed_extensions = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v'}
+        if extracted_ext in allowed_extensions:
+            file_ext = extracted_ext
+    
     temp_dir = tempfile.gettempdir()
     unique_id = str(uuid.uuid4())
     temp_video_path = os.path.join(temp_dir, f"video_{unique_id}{file_ext}")
     
     try:
-        # Save uploaded file to disk
-        print(f"📥 Receiving video: {video.filename}")
+        # Download video
+        print(f"📥 Downloading video from: {video_url[:80]}...")
         
-        with open(temp_video_path, "wb") as buffer:
-            # Read in chunks to handle large files
-            chunk_size = 1024 * 1024  # 1MB chunks
-            while True:
-                chunk = await video.read(chunk_size)
-                if not chunk:
-                    break
-                buffer.write(chunk)
+        success = download_from_google_drive(video_url, temp_video_path)
+        
+        if not success:
+            raise HTTPException(
+                status_code=400,
+                detail="Failed to download video. Make sure the Google Drive link is set to 'Anyone with the link can view'."
+            )
         
         file_size_mb = os.path.getsize(temp_video_path) / (1024 * 1024)
-        print(f"📁 Video saved: {file_size_mb:.2f} MB")
+        print(f"📁 Video downloaded: {file_size_mb:.2f} MB")
         
         # Run analysis
+        print("🔬 Starting video analysis...")
         analyzer = VideoTalentAnalyzer(temp_video_path, temp_dir=temp_dir)
         result = analyzer.run()
         
-        # Schedule cleanup in background
+        # Schedule cleanup
         background_tasks.add_task(cleanup_temp_file, temp_video_path)
+        
+        print("✅ Analysis complete!")
         
         return AnalysisResponse(
             success=True,
@@ -137,8 +211,9 @@ async def analyze_video(
             pronunciation_metrics=result["pronunciation_metrics"]
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
-        # Ensure cleanup on error
         background_tasks.add_task(cleanup_temp_file, temp_video_path)
         
         print(f"❌ Error analyzing video: {str(e)}")
@@ -148,62 +223,8 @@ async def analyze_video(
         )
 
 
-@app.post("/analyze/transcript-only", response_model=AnalysisResponse)
-async def analyze_transcript_only(
-    background_tasks: BackgroundTasks,
-    video: UploadFile = File(..., description="Video file to transcribe")
-):
-    """
-    Lightweight endpoint that only transcribes the video without pronunciation analysis.
-    Faster and uses fewer resources.
-    """
-    
-    allowed_extensions = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v'}
-    file_ext = os.path.splitext(video.filename or "")[1].lower()
-    
-    if file_ext not in allowed_extensions:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid file type '{file_ext}'. Allowed: {', '.join(allowed_extensions)}"
-        )
-    
-    temp_dir = tempfile.gettempdir()
-    unique_id = str(uuid.uuid4())
-    temp_video_path = os.path.join(temp_dir, f"video_{unique_id}{file_ext}")
-    
-    try:
-        with open(temp_video_path, "wb") as buffer:
-            chunk_size = 1024 * 1024
-            while True:
-                chunk = await video.read(chunk_size)
-                if not chunk:
-                    break
-                buffer.write(chunk)
-        
-        analyzer = VideoTalentAnalyzer(temp_video_path, temp_dir=temp_dir)
-        analyzer.extract_audio()
-        analyzer.transcribe_content()
-        transcript = analyzer.transcript_text
-        analyzer.clean_up()
-        
-        background_tasks.add_task(cleanup_temp_file, temp_video_path)
-        
-        return AnalysisResponse(
-            success=True,
-            transcript=transcript
-        )
-        
-    except Exception as e:
-        background_tasks.add_task(cleanup_temp_file, temp_video_path)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error transcribing video: {str(e)}"
-        )
-
-
 # --- Run with uvicorn for local development ---
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8080))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
