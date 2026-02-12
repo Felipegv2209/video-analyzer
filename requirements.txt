@@ -10,8 +10,8 @@ azure-cognitiveservices-speech>=1.31.0
 moviepy>=1.0.3
 pydub>=0.25.1
 
-# Download from Google Drive
-gdown>=5.1.0
+# HTTP client
+requests>=2.31.0
 
 # Utilities
 python-dotenv>=1.0.0

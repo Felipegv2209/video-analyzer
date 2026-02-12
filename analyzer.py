@@ -276,7 +276,7 @@ class VideoTalentAnalyzer:
                 except:
                     pass
         
-        print("🧹 Temporary files cleaned.")
+        print("Temporary files cleaned.")
 
     def run(self) -> dict:
         """
